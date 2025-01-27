@@ -7,30 +7,30 @@ import traceback
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import accuracy_score
 from models import model_selection
-from prompts.imposter_detection_prompts import get_default_system_prompt, get_zero_shot_prompt, get_one_shot_prompt, get_few_shot_prompt
-from datetime import datetime
 from enum import Enum, auto
+from prompts.imposter_detection_prompts import get_default_system_prompt, get_zero_shot_dist_prompt, get_one_shot_dist_prompt, get_few_shot_dist_prompt
+from datetime import datetime
+from pathlib import Path
 import csv
 
 class PromptType(Enum):
-    ZERO_SHOT = auto()
-    ONE_SHOT = auto()
-    FEW_SHOT = auto()
+    ZERO_SHOT_DIST = auto()
+    ONE_SHOT_DIST = auto()
+    FEW_SHOT_DIST = auto()
     # 必要に応じて他のプロンプトタイプを追加
 
 PROMPT_FUNC_MAPPING = {
-    PromptType.ZERO_SHOT: get_zero_shot_prompt,
-    PromptType.ONE_SHOT: get_one_shot_prompt,
-    PromptType.FEW_SHOT: get_few_shot_prompt
+    PromptType.ZERO_SHOT_DIST: get_zero_shot_dist_prompt,
+    PromptType.ONE_SHOT_DIST: get_one_shot_dist_prompt,
+    PromptType.FEW_SHOT_DIST: get_few_shot_dist_prompt
 }
 
 def get_output_path(prompt_type: PromptType, input_path: Path) -> Path:
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     data_name = input_path.stem
     output_dir = Path("outputs") / prompt_type.name.lower()  # "outputs/zero_shot"など
-    output_path = output_dir / f"{current_time}_{data_name}.csv" #json
+    output_path = output_dir / f"{current_time}_{data_name}.csv" #json #csv
     return output_path
-
 
 class ImposterDetectProcessor:
     def __init__(self, model_name: str, 
@@ -38,14 +38,14 @@ class ImposterDetectProcessor:
         prompt_func: Callable[[str, str], str] = None):
         self.model, self.tokenizer = model_selection.load_model(model_name)
         self.system_prompt = system_prompt if system_prompt is not None else get_default_system_prompt()
-        self.prompt_func = prompt_func if prompt_func is not None else get_zero_shot_prompt
+        self.prompt_func = prompt_func if prompt_func is not None else get_zero_shot_dist_prompt
 
     def process_file(self, input_path: Path, output_path: Path):
         try:
             df = self._load_data(input_path)
-            output_psyc_data = self._get_results(df)
+            output_impo_data = self._get_results(df)
             # output_psyc_data = self._get_results(df)
-            output_path = self._save_output(output_psyc_data, output_path)
+            output_path = self._save_output(output_impo_data, output_path)
             print(f'{output_path}に保存されました')
             
         except Exception as e:
@@ -90,9 +90,9 @@ class ImposterDetectProcessor:
         return output.strip()
     
     def _get_results(self, df):
-        predicted_psyc_labels = []
-        df = df[df['psychological_label'] != 0]
-        # df = df[df['dist_impo_label'] != 0]
+        distincted_impo_labels = []
+        #df = df[df['psychological_label'] != 0]
+        df = df[df['camp_label'] >= 0]
         for i, row in df.iterrows():
             context = row['context']
             user_comment = row['user_comment']
@@ -101,35 +101,35 @@ class ImposterDetectProcessor:
             import re
             match = re.search(r'\d', prediction)  # Find the first digit in the string
             if match:
-                predicted_psyc_labels.append(int(match.group()))
+                distincted_impo_labels.append(int(match.group()))
             else:
-                predicted_psyc_labels.append(None)
+                distincted_impo_labels.append(None)
             # predicted_psyc_labels.append(int(' '.join([char for char in prediction if char.isdigit()])))
-            
-        df['pred_psyc_label'] = predicted_psyc_labels
-        print(predicted_psyc_labels)
+         
+        df['dist_impo_label'] = distincted_impo_labels
+        print(distincted_impo_labels)
 
-        psyc_accuracy = accuracy_score(df['psychological_label'], df['pred_psyc_label'])
-        psyc_accuracy = f"心理的効果 正解率: {psyc_accuracy * 100:.2f}%"
-        df['psyc_accuracy'] = psyc_accuracy
-        output_psyc_data = df.to_dict(orient='records')
+        impo_accuracy = accuracy_score(df['camp_label'], df['dist_impo_label'])
+        impo_accuracy = f"陣営判別 正解率: {impo_accuracy * 100:.2f}%"
+        df['impo_accuracy'] = impo_accuracy
+        output_impo_data = df.to_dict(orient='records')
 
-        return output_psyc_data
+        return output_impo_data
     
-    def _save_output_to_json(self, output_psyc_data, output_path):
+    def _save_output_to_json(self, output_impo_data, output_path):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(output_psyc_data, f, ensure_ascii=False, indent=4)
+            json.dump(output_impo_data, f, ensure_ascii=False, indent=4)
         return output_path
 
-    def _save_output(self, output_psyc_data, output_path):
+    def _save_output(self, output_impo_data, output_path):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(output_path, "w", encoding="utf-8", newline="") as f:
-            if isinstance(output_psyc_data, list) and all(isinstance(item, dict) for item in output_psyc_data):
-                writer = csv.DictWriter(f, fieldnames=output_psyc_data[0].keys())
+            if isinstance(output_impo_data, list) and all(isinstance(item, dict) for item in output_impo_data):
+                writer = csv.DictWriter(f, fieldnames=output_impo_data[0].keys())
                 writer.writeheader()
-                writer.writerows(output_psyc_data)
+                writer.writerows(output_impo_data)
             else:
                 raise ValueError("Output data must be a list of dictionaries to save as CSV.")
         return output_path
@@ -137,14 +137,13 @@ class ImposterDetectProcessor:
 def main():
     model_name = "elyza/Llama-3-ELYZA-JP-8B"
     system_prompt = get_default_system_prompt()
-    
-    prompt_type = PromptType.FEW_SHOT #ZERO_SHOT #ONE_SHOT #FEW_SHOT
+
+    prompt_type = PromptType.FEW_SHOT_DIST #ZERO_SHOT #ONE_SHOT #FEW_SHOT #ZERO_SHOT_DIST #ONE_SHOT_DIST #FEW_SHOT_DIST
     prompt_func = PROMPT_FUNC_MAPPING[prompt_type]
-    
+
     input_path = Path("data/sample.csv")
-    # input_path = Path("outputs/few_shot_dist/10.csv")
     output_path = get_output_path(prompt_type, input_path)
-    
+
     processor = ImposterDetectProcessor(
         model_name,
         system_prompt=system_prompt,
